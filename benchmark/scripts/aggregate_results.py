@@ -18,6 +18,7 @@ TIMING_FIELDS = (
 )
 DERIVED_PHASE_FIELDS = ("pass1_ms", "pass2_ms", "communication_ms")
 CHUNK_FIELDS = ("run", "index", "diff", "luma", "rgb", "rgba")
+BOOLEAN_FIELDS = ("is_warmup", "validation_passed", "pixel_match", "sha256_match")
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -31,6 +32,17 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames or ["status"])
         writer.writeheader()
         writer.writerows(rows)
+
+
+def read_per_run_csv(path: Path) -> list[dict[str, Any]]:
+    """Read an existing flattened run table without losing boolean semantics."""
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        rows: list[dict[str, Any]] = list(csv.DictReader(handle))
+    for row in rows:
+        for field in BOOLEAN_FIELDS:
+            value = str(row.get(field, "")).strip().lower()
+            row[field] = True if value == "true" else False if value == "false" else None
+    return rows
 
 
 def finite(values: Iterable[Any]) -> list[float]:
@@ -122,7 +134,7 @@ def aggregate_image(group: list[dict[str, Any]]) -> dict[str, Any]:
     )}
     row["measured_runs"] = len(group)
     row["all_valid"] = all(item.get("validation_passed") is True for item in group)
-    for field in (*TIMING_FIELDS, *DERIVED_PHASE_FIELDS):
+    for field in (*TIMING_FIELDS, *DERIVED_PHASE_FIELDS, "process_wall_ms"):
         row.update(describe((item.get(field) for item in group), field))
     row.update(describe((item.get("pipeline_ms") for item in group), "pipeline_ms"))
     for field in ("output_bytes", "compression_ratio", "throughput_mpixels", "core_pipeline_throughput_mpixels", "inherited_index_hits",
@@ -142,9 +154,10 @@ def worker_count(row: dict[str, Any]) -> float | None:
 
 
 def add_derived_metrics(rows: list[dict[str, Any]]) -> None:
-    by_image: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_image: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        by_image[str(row["image_id"])].append(row)
+        key = (str(row.get("stage")), str(row["image_id"]))
+        by_image[key].append(row)
     for image_rows in by_image.values():
         serial = next((row for row in image_rows if row.get("backend") == "serial"), None)
         serial_time = serial.get("encode_ms_median") if serial else None
@@ -170,6 +183,20 @@ def add_derived_metrics(rows: list[dict[str, Any]]) -> None:
                 (float(output_bytes) - float(serial_bytes)) / float(serial_bytes) * 100.0
                 if output_bytes is not None and serial_bytes else None
             )
+
+
+def group_measured_runs(rows: Iterable[dict[str, Any]]) -> dict[tuple[str, str, str, str], list[dict[str, Any]]]:
+    """Keep stages and backends isolated when aggregating repeated runs."""
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        key = (
+            str(row.get("stage")),
+            str(row.get("image_id")),
+            str(row.get("backend")),
+            str(row.get("configuration_id")),
+        )
+        groups[key].append(row)
+    return groups
 
 
 def aggregate_suite(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -212,29 +239,37 @@ def aggregate_suite(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[d
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-dir", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input-dir", type=Path)
+    source.add_argument("--per-run-input", type=Path,
+                        help="Existing flattened per-run CSV; avoids rescanning all result JSON files")
     parser.add_argument("--output", type=Path, required=True, help="Per-run CSV path")
     parser.add_argument("--summary-dir", type=Path)
     args = parser.parse_args()
     summary_dir = args.summary_dir or args.output.parent
 
-    per_run = []
-    for path in sorted(args.input_dir.rglob("*.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        if "timing" in payload:
-            per_run.append(flatten(path, payload))
-    write_csv(args.output, per_run)
+    if args.per_run_input:
+        per_run = read_per_run_csv(args.per_run_input)
+        if args.per_run_input.resolve() != args.output.resolve():
+            write_csv(args.output, per_run)
+    else:
+        per_run = []
+        for path in sorted(args.input_dir.rglob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if "timing" in payload:
+                per_run.append(flatten(path, payload))
+        write_csv(args.output, per_run)
 
     measured = [row for row in per_run if not row["is_warmup"] and row["status"] == "success"]
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in measured:
-        groups[(str(row["image_id"]), str(row["configuration_id"]))].append(row)
+    groups = group_measured_runs(measured)
     per_image = [aggregate_image(group) for group in groups.values()]
     add_derived_metrics(per_image)
-    per_image.sort(key=lambda row: (str(row["image_id"]), str(row["backend"]), str(row["configuration_id"])))
+    per_image.sort(key=lambda row: (
+        str(row.get("stage")), str(row["image_id"]), str(row["backend"]), str(row["configuration_id"]),
+    ))
     write_csv(summary_dir / "per-image-summary.csv", per_image)
     write_csv(summary_dir / "category-summary.csv", aggregate_suite(per_image, ("stage", "category", "backend", "configuration_id")))
     write_csv(summary_dir / "full-suite-summary.csv", aggregate_suite(per_image, ("stage", "backend", "configuration_id")))
