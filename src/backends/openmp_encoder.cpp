@@ -30,6 +30,21 @@ std::vector<std::uint8_t> encode_openmp_qoi(const Image& image,
     const std::size_t requested_blocks = options.blocks == 0U
         ? requested_threads * 2U
         : options.blocks;
+    const int thread_count = static_cast<int>(requested_threads);
+
+    // The first OpenMP parallel region in a process pays for creating and
+    // waking the worker team. Keep that runtime setup cost separate from the
+    // pixel summary pass so phase comparisons describe the actual work.
+    const auto openmp_init_start = clock_type::now();
+#ifdef PQOI_HAS_OPENMP
+    int initialized_threads = 0;
+#pragma omp parallel num_threads(thread_count) reduction(+: initialized_threads)
+    {
+        initialized_threads += 1;
+    }
+    (void)initialized_threads;
+#endif
+    if (metrics) metrics->openmp_init_ms = elapsed_ms(openmp_init_start, clock_type::now());
 
     const auto summary_start = clock_type::now();
     const std::vector<Block> blocks = partition_blocks(image.pixels.size(), requested_blocks);
@@ -37,7 +52,6 @@ std::vector<std::uint8_t> encode_openmp_qoi(const Image& image,
         throw std::runtime_error("OpenMP block count exceeds the supported loop range");
     }
     const int block_count = static_cast<int>(blocks.size());
-    const int thread_count = static_cast<int>(requested_threads);
     std::vector<BlockSummary> summaries(blocks.size());
 #ifdef PQOI_HAS_OPENMP
 #pragma omp parallel for schedule(static) num_threads(thread_count)

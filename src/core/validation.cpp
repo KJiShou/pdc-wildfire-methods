@@ -2,61 +2,11 @@
 
 #include "qoi/qoi.h"
 
-#include <cstring>
 #include <cstdlib>
-#include <array>
 #include <fstream>
 #include <iterator>
-#include <limits>
 #include <stdexcept>
 #include <vector>
-
-#ifdef _WIN32
-#include <windows.h>
-#include <bcrypt.h>
-#endif
-
-namespace {
-
-std::vector<std::uint8_t> pixel_bytes(const pqoi::Image& image) {
-    std::vector<std::uint8_t> bytes;
-    bytes.reserve(image.pixels.size() * 4U);
-    for (const pqoi::Pixel pixel : image.pixels) {
-        bytes.push_back(pixel.r); bytes.push_back(pixel.g); bytes.push_back(pixel.b); bytes.push_back(pixel.a);
-    }
-    return bytes;
-}
-
-#ifdef _WIN32
-bool same_sha256(const std::vector<std::uint8_t>& left, const std::vector<std::uint8_t>& right) {
-    BCRYPT_ALG_HANDLE algorithm = nullptr;
-    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0U) != 0) return false;
-    DWORD object_length = 0U;
-    DWORD property_length = 0U;
-    if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&object_length), sizeof(object_length), &property_length, 0U) != 0) {
-        BCryptCloseAlgorithmProvider(algorithm, 0U); return false;
-    }
-    auto digest = [&algorithm, object_length](const std::vector<std::uint8_t>& input) {
-        std::vector<UCHAR> object(object_length);
-        std::array<UCHAR, 32> result{};
-        BCRYPT_HASH_HANDLE hash = nullptr;
-        if (BCryptCreateHash(algorithm, &hash, object.data(), object_length, nullptr, 0U, 0U) != 0) return result;
-        const ULONG input_length = input.size() > static_cast<std::size_t>((std::numeric_limits<ULONG>::max)())
-            ? (std::numeric_limits<ULONG>::max)()
-            : static_cast<ULONG>(input.size());
-        BCryptHashData(hash, const_cast<PUCHAR>(input.data()), input_length, 0U);
-        BCryptFinishHash(hash, result.data(), static_cast<ULONG>(result.size()), 0U);
-        BCryptDestroyHash(hash);
-        return result;
-    };
-    const auto left_digest = digest(left);
-    const auto right_digest = digest(right);
-    BCryptCloseAlgorithmProvider(algorithm, 0U);
-    return left_digest == right_digest;
-}
-#endif
-
-}  // namespace
 
 namespace pqoi {
 
@@ -88,13 +38,6 @@ ValidationDetails validate_qoi_detailed(const std::string& qoi_path, const Image
         result.dimensions_match = actual.width == expected.width && actual.height == expected.height;
         result.channels_match = actual.channels == expected.channels;
         result.pixel_match = actual.pixels == expected.pixels;
-        const auto actual_bytes = pixel_bytes(actual);
-        const auto expected_bytes = pixel_bytes(expected);
-#ifdef _WIN32
-        result.sha256_match = same_sha256(actual_bytes, expected_bytes);
-#else
-        result.sha256_match = actual_bytes == expected_bytes;
-#endif
     } catch (...) {
         return result;
     }
@@ -103,10 +46,6 @@ ValidationDetails validate_qoi_detailed(const std::string& qoi_path, const Image
 
 bool validate_qoi(const std::string& qoi_path, const Image& expected) {
     return validate_qoi_detailed(qoi_path, expected).passed();
-}
-
-bool sha256_match_qoi(const std::string& qoi_path, const Image& expected) {
-    return validate_qoi_detailed(qoi_path, expected).sha256_match;
 }
 
 }  // namespace pqoi

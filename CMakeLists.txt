@@ -27,7 +27,7 @@ target_include_directories(pqoi_core PUBLIC include third_party)
 target_compile_features(pqoi_core PUBLIC cxx_std_17)
 
 if (WIN32)
-    target_link_libraries(pqoi_core PRIVATE windowscodecs ole32 bcrypt)
+    target_link_libraries(pqoi_core PRIVATE windowscodecs ole32)
 endif()
 
 if (MSVC)

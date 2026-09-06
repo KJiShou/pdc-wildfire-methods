@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 int main() {
@@ -22,15 +24,62 @@ int main() {
             static_cast<std::uint8_t>(index * 7U),
             static_cast<std::uint8_t>(index % 3U == 0U ? 255U : 200U)});
     }
+    assert(pqoi::equivalent_bmp_bytes(image) == 54U + 17U * 9U * 4U);
+    pqoi::Image oversized;
+    oversized.width = (std::numeric_limits<std::uint32_t>::max)();
+    oversized.height = (std::numeric_limits<std::uint32_t>::max)();
+    bool overflow_rejected = false;
+    try {
+        (void)pqoi::equivalent_bmp_bytes(oversized);
+    } catch (const std::runtime_error&) {
+        overflow_rejected = true;
+    }
+    assert(overflow_rejected);
     const pqoi::EncodeOptions options{"serial", 7U, 1U, 128U};
     const auto bytes = pqoi::encode_qoi(image, options);
+    const std::string ratio_input = "pqoi_ratio_input.bmp";
+    const std::string ratio_output = "pqoi_ratio_output.qoi";
+    const std::string ratio_result = "pqoi_ratio_result.json";
+    pqoi::write_bmp(ratio_input, image);
+    const auto conversion = pqoi::run_conversion(ratio_input, ratio_output, ratio_result, "", options, true);
+    assert(conversion.status == "success");
+    assert(conversion.openmp_init_ms == 0.0);
+    assert(conversion.bmp_bytes == pqoi::equivalent_bmp_bytes(image));
+    assert(conversion.output_bytes > 0U);
+    assert(conversion.compression_ratio == static_cast<double>(conversion.bmp_bytes) / conversion.output_bytes);
+    std::ifstream result_file(ratio_result);
+    const std::string result_text((std::istreambuf_iterator<char>(result_file)), std::istreambuf_iterator<char>());
+    assert(result_text.find("\"openmp_init_ms\"") != std::string::npos);
+    assert(result_text.find("sha256") == std::string::npos);
+    std::remove(ratio_input.c_str());
+    std::remove(ratio_output.c_str());
+    std::remove(ratio_result.c_str());
     const std::string path = "pqoi_core_test.qoi";
     {
         std::ofstream output(path, std::ios::binary);
         output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
     assert(pqoi::validate_qoi(path, image));
+    pqoi::Image changed = image;
+    changed.pixels.front().r ^= 1U;
+    assert(!pqoi::validate_qoi(path, changed));
     std::remove(path.c_str());
+
+#ifdef PQOI_HAS_OPENMP
+    pqoi::EncodeResult openmp_metrics;
+    const auto openmp_bytes = pqoi::encode_qoi(
+        image, pqoi::EncodeOptions{"openmp", 4U, 4U, 128U}, &openmp_metrics);
+    assert(openmp_metrics.openmp_init_ms >= 0.0);
+    assert(openmp_metrics.summary_ms >= 0.0);
+    assert(openmp_metrics.core_pipeline_ms >= openmp_metrics.openmp_init_ms);
+    const std::string openmp_path = "pqoi_openmp_test.qoi";
+    {
+        std::ofstream output(openmp_path, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(openmp_bytes.data()), static_cast<std::streamsize>(openmp_bytes.size()));
+    }
+    assert(pqoi::validate_qoi(openmp_path, image));
+    std::remove(openmp_path.c_str());
+#endif
 
     const std::vector<pqoi::Block> summary_blocks = pqoi::partition_blocks(image.pixels.size(), 6U);
     std::vector<pqoi::BlockSummary> summaries;
@@ -118,6 +167,7 @@ int main() {
     pqoi::Image rgb_image = image;
     rgb_image.channels = 3U;
     for (pqoi::Pixel& pixel : rgb_image.pixels) pixel.a = 255U;
+    assert(pqoi::equivalent_bmp_bytes(rgb_image) == 54U + 17U * 9U * 4U);
     const auto rgb_bytes = pqoi::encode_qoi(rgb_image, pqoi::EncodeOptions{"serial", 4U, 1U, 64U});
     {
         std::ofstream output("pqoi_rgb_test.qoi", std::ios::binary);

@@ -58,7 +58,7 @@ export function ConvertPage({ backends, image, onImage }: Props) {
     <section className="page-heading">
       <Typography.Text className="eyebrow">Interactive encoder</Typography.Text>
       <Typography.Title heading={1}>Turn pixels into a <span className="accent-heading">Quite OK</span> image.</Typography.Title>
-      <Typography.Paragraph className="hero-copy">Upload one PNG or BMP, choose an execution model, and inspect a standards-compatible QOI result.</Typography.Paragraph>
+      <Typography.Paragraph className="hero-copy">Upload one PNG, BMP, or JPEG, choose an execution model, and inspect a standards-compatible QOI result.</Typography.Paragraph>
     </section>
     <Row gutter={16} align="start">
       <Col xs={24} lg={15}>
@@ -81,8 +81,13 @@ export function ConvertPage({ backends, image, onImage }: Props) {
             </Space>
             {response && <Row gutter={8} className="metric-strip">
               <Col span={8}><Statistic title="Encode" value={response.result.timing.encode_ms.toFixed(2)} suffix="ms" /></Col>
-              <Col span={8}><Statistic title="Output" value={(response.result.output.bytes / 1024).toFixed(1)} suffix="KB" /></Col>
+              <Col span={8}><Statistic title="QOI output" value={(response.result.output.bytes / 1024).toFixed(1)} suffix="KB" /></Col>
               <Col span={8}><Statistic title="Throughput" value={response.result.output.throughput_mpixels.toFixed(2)} suffix="MPix/s" /></Col>
+            </Row>}
+            {response && <Row gutter={8} className="metric-strip">
+              <Col span={8}><Statistic title="Equivalent BMP" value={(response.result.output.bmp_bytes / 1024).toFixed(1)} suffix="KB" /></Col>
+              <Col span={8}><Statistic title="Compression (BMP/QOI)" value={response.result.output.compression_ratio.toFixed(2)} suffix="×" /></Col>
+              <Col span={8}><Statistic title="Space saved" value={(response.result.output.bmp_bytes > 0 ? (1 - response.result.output.bytes / response.result.output.bmp_bytes) * 100 : 0).toFixed(1)} suffix="%" /></Col>
             </Row>}
           </Space>
         </Card>

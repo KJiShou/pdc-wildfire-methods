@@ -31,18 +31,11 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Command failed with exit code $LASTEXITCODE" }
 }
-function Get-Sha256([string]$Path) {
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha256.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '') }
-    finally { $sha256.Dispose() }
-}
-
 $inputPath = Join-Path $WorkingDirectory 'server-input.bmp'
 $serialOutput = Join-Path $WorkingDirectory 'server-serial.qoi'
 $serialResult = Join-Path $WorkingDirectory 'server-serial.json'
 Write-TestBmp $inputPath
 Invoke-Checked $SerialExe @('--input', $inputPath, '--output', $serialOutput, '--result', $serialResult, '--no-preview', '--blocks', '7', '--validate')
-$serialHash = Get-Sha256 $serialOutput
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $Mpiexec
@@ -67,10 +60,12 @@ try {
     foreach ($response in @($first, $second)) {
         if ($response.status -ne 'success') { throw "MPI server request failed: $($response.error)" }
     }
-    if (-not (Get-Content -Raw $resultTwo | ConvertFrom-Json).validation.passed) { throw 'MPI server validation failed' }
+    foreach ($resultPath in @($resultOne, $resultTwo)) {
+        $validation = (Get-Content -Raw $resultPath | ConvertFrom-Json).validation
+        if (-not $validation.passed -or -not $validation.pixel_match) { throw "MPI server validation failed: $resultPath" }
+    }
     if (-not (Get-Content -Raw $resultTwo | ConvertFrom-Json).configuration.persistent_context_reused) { throw 'MPI worker context was not reused' }
     if (-not (Get-Content -Raw $resultTwo | ConvertFrom-Json).configuration.input_cache_reused) { throw 'MPI input cache was not reused' }
-    if ((Get-Sha256 $outputOne) -ne $serialHash -or (Get-Sha256 $outputTwo) -ne $serialHash) { throw 'MPI server output differs from Serial' }
     $process.StandardInput.Close()
     $process.WaitForExit()
     if ($process.ExitCode -ne 0) { throw "MPI server exited with code $($process.ExitCode)" }

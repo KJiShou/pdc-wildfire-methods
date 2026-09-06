@@ -11,11 +11,26 @@ function finiteNonNegative(value: unknown): number {
 
 function bool(value: unknown): boolean { return value === true }
 
-export function normalizeResult(raw: Partial<NativeResult>, request: ConversionRequest, image: SelectedImage, job: { outputPath: string; previewPath: string }): NativeResult {
+type NativeResultInput = Omit<Partial<NativeResult>, 'timing' | 'output' | 'validation' | 'configuration'> & {
+  timing?: Partial<NativeResult['timing']>
+  output?: Partial<NativeResult['output']>
+  validation?: Partial<NativeResult['validation']>
+  configuration?: Partial<NativeResult['configuration']>
+}
+
+export function normalizeResult(raw: NativeResultInput, request: ConversionRequest, image: SelectedImage, job: { outputPath: string; previewPath: string }): NativeResult {
   const rawTiming = raw.timing
   const rawValidation = raw.validation
   const rawConfiguration = raw.configuration
   const rawOutput = raw.output
+  const input = raw.input ?? { path: image.inputPath, width: image.width, height: image.height, channels: image.channels }
+  const inputWidth = Number(input.width ?? image.width)
+  const inputHeight = Number(input.height ?? image.height)
+  const outputBytes = finiteNonNegative(rawOutput?.bytes)
+  const fallbackBmpBytes = Number.isFinite(inputWidth) && inputWidth >= 0 && Number.isFinite(inputHeight) && inputHeight >= 0
+    ? 54 + inputWidth * inputHeight * 4
+    : 0
+  const bmpBytes = finiteNonNegative(rawOutput?.bmp_bytes ?? fallbackBmpBytes)
   const threads = request.backend === 'serial' ? 1 : (request.threads ?? 4)
   const segmentLength = Math.max(1, request.segmentLength ?? 1024)
   const requestedBlocks = Math.max(1, request.blocks ?? 8)
@@ -29,7 +44,7 @@ export function normalizeResult(raw: Partial<NativeResult>, request: ConversionR
     status: raw.status === 'success' || raw.status === 'validation_failed' ? raw.status : 'error',
     backend: raw.backend ?? request.backend,
     error: raw.error,
-    input: raw.input ?? { path: image.inputPath, width: image.width, height: image.height, channels: image.channels },
+    input,
     configuration: {
       blocks: Number(rawConfiguration?.blocks ?? blocks),
       threads: Number(rawConfiguration?.threads ?? threads),
@@ -42,6 +57,7 @@ export function normalizeResult(raw: Partial<NativeResult>, request: ConversionR
     timing: {
       load_ms: finiteNonNegative(rawTiming?.load_ms),
       cuda_init_ms: finiteNonNegative(rawTiming?.cuda_init_ms),
+      openmp_init_ms: finiteNonNegative(rawTiming?.openmp_init_ms),
       allocation_ms: finiteNonNegative(rawTiming?.allocation_ms),
       summary_ms: finiteNonNegative(rawTiming?.summary_ms),
       propagation_ms: finiteNonNegative(rawTiming?.propagation_ms),
@@ -59,8 +75,9 @@ export function normalizeResult(raw: Partial<NativeResult>, request: ConversionR
     },
     output: {
       path: rawOutput?.path ?? job.outputPath,
-      bytes: Number(rawOutput?.bytes ?? 0),
-      compression_ratio: Number(rawOutput?.compression_ratio ?? 0),
+      bytes: outputBytes,
+      bmp_bytes: bmpBytes,
+      compression_ratio: outputBytes > 0 ? bmpBytes / outputBytes : 0,
       throughput_mpixels: Number(rawOutput?.throughput_mpixels ?? 0),
       core_pipeline_throughput_mpixels: Number(rawOutput?.core_pipeline_throughput_mpixels ?? 0),
     },
@@ -69,8 +86,10 @@ export function normalizeResult(raw: Partial<NativeResult>, request: ConversionR
     preview_path: raw.preview_path ?? job.previewPath,
     validation: {
       passed: rawValidation?.passed ?? false,
+      decoder_accepted: rawValidation?.decoder_accepted ?? false,
+      dimensions_match: rawValidation?.dimensions_match ?? false,
+      channels_match: rawValidation?.channels_match ?? false,
       pixel_match: rawValidation?.pixel_match ?? false,
-      sha256_match: rawValidation?.sha256_match ?? false,
     },
   }
 }
@@ -153,7 +172,7 @@ export class ConversionService {
             validate: true,
           }, job.resultPath, commandArgs)
       : await this.runner.run(job.jobId, command, commandArgs, job.resultPath)
-    const result = normalizeResult(rawResult as Partial<NativeResult>, request, image, job)
+    const result = normalizeResult(rawResult as NativeResultInput, request, image, job)
     const orchestration = normalizeOrchestration(rawResult, result)
     const previewDataUrl = result.validation?.passed && existsSync(job.previewPath)
       ? await this.temp.previewDataUrl(job.jobId)

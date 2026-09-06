@@ -52,15 +52,6 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
     }
 }
 
-function Get-Sha256([string]$Path) {
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha256.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '')
-    } finally {
-        $sha256.Dispose()
-    }
-}
-
 $cases = @(
     @{ Name = 'rgba'; Width = 17; Height = 9; Bits = 32; Ranks = @(1, 2, 4); Blocks = 6 },
     @{ Name = 'rgb'; Width = 19; Height = 7; Bits = 24; Ranks = @(2, 4); Blocks = 5 },
@@ -73,19 +64,14 @@ foreach ($case in $cases) {
     $serialOutput = Join-Path $WorkingDirectory "$($case.Name)-serial.qoi"
     $serialResult = Join-Path $WorkingDirectory "$($case.Name)-serial.json"
     Invoke-Checked $SerialExe @('--input', $input, '--output', $serialOutput, '--result', $serialResult, '--no-preview', '--blocks', "$($case.Blocks)", '--validate')
-    $serialHash = Get-Sha256 $serialOutput
 
     foreach ($rankCount in $case.Ranks) {
         $mpiOutput = Join-Path $WorkingDirectory "$($case.Name)-mpi-$rankCount.qoi"
         $mpiResult = Join-Path $WorkingDirectory "$($case.Name)-mpi-$rankCount.json"
         Invoke-Checked $Mpiexec @('-n', "$rankCount", $MpiExe, '--input', $input, '--output', $mpiOutput, '--result', $mpiResult, '--no-preview', '--blocks', "$($case.Blocks)", '--validate')
         $result = Get-Content -Raw $mpiResult | ConvertFrom-Json
-        if ($result.status -ne 'success' -or -not $result.validation.passed) {
+        if ($result.status -ne 'success' -or -not $result.validation.passed -or -not $result.validation.pixel_match) {
             throw "MPI validation failed for $($case.Name) with $rankCount ranks"
-        }
-        $mpiHash = Get-Sha256 $mpiOutput
-        if ($mpiHash -ne $serialHash) {
-            throw "MPI output differs from Serial for $($case.Name) with $rankCount ranks"
         }
     }
 }

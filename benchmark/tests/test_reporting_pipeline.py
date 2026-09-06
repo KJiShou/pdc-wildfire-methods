@@ -44,10 +44,10 @@ class ReportingPipelineTests(unittest.TestCase):
 
     def test_derived_metrics_use_serial_from_the_same_stage(self) -> None:
         rows = [
-            {"stage": "tuning", "image_id": "shared", "backend": "serial", "encode_ms_median": 100.0, "output_bytes_median": 1000.0},
-            {"stage": "tuning", "image_id": "shared", "backend": "openmp", "threads": 4, "encode_ms_median": 25.0, "output_bytes_median": 1010.0},
-            {"stage": "full", "image_id": "shared", "backend": "serial", "encode_ms_median": 10.0, "output_bytes_median": 2000.0},
-            {"stage": "full", "image_id": "shared", "backend": "openmp", "threads": 4, "encode_ms_median": 5.0, "output_bytes_median": 2020.0},
+            {"stage": "tuning", "image_id": "shared", "backend": "serial", "encode_ms_median": 100.0, "output_bytes_median": 1000.0, "bmp_bytes_median": 4000.0},
+            {"stage": "tuning", "image_id": "shared", "backend": "openmp", "threads": 4, "encode_ms_median": 25.0, "output_bytes_median": 1010.0, "bmp_bytes_median": 4000.0},
+            {"stage": "full", "image_id": "shared", "backend": "serial", "encode_ms_median": 10.0, "output_bytes_median": 2000.0, "bmp_bytes_median": 8000.0},
+            {"stage": "full", "image_id": "shared", "backend": "openmp", "threads": 4, "encode_ms_median": 5.0, "output_bytes_median": 2020.0, "bmp_bytes_median": 8000.0},
         ]
 
         aggregate_results.add_derived_metrics(rows)
@@ -60,6 +60,8 @@ class ReportingPipelineTests(unittest.TestCase):
         self.assertEqual(0.5, full_openmp["efficiency"])
         self.assertAlmostEqual(1.0, tuning_openmp["size_overhead_percent"])
         self.assertAlmostEqual(1.0, full_openmp["size_overhead_percent"])
+        self.assertAlmostEqual(4000.0 / 1010.0, tuning_openmp["compression_ratio"])
+        self.assertAlmostEqual((1.0 - 1010.0 / 4000.0) * 100.0, tuning_openmp["size_reduction_percent"])
 
     def test_summary_directory_resolution_supports_current_layout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -75,19 +77,21 @@ class ReportingPipelineTests(unittest.TestCase):
             self.assertEqual(summary, resolved_summary)
             self.assertEqual(tuning, resolved_tuning)
 
-    def test_per_run_csv_restores_boolean_fields(self) -> None:
+    def test_per_run_csv_restores_boolean_fields_and_bmp_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "per-run.csv"
             with path.open("w", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(handle, fieldnames=[
-                    "is_warmup", "validation_passed", "pixel_match", "sha256_match",
+                    "is_warmup", "validation_passed", "pixel_match", "width", "height", "output_bytes",
                 ])
                 writer.writeheader()
                 writer.writerow({
                     "is_warmup": "False",
                     "validation_passed": "True",
                     "pixel_match": "True",
-                    "sha256_match": "True",
+                    "width": "8",
+                    "height": "4",
+                    "output_bytes": "100",
                 })
 
             row = aggregate_results.read_per_run_csv(path)[0]
@@ -95,7 +99,25 @@ class ReportingPipelineTests(unittest.TestCase):
             self.assertIs(row["is_warmup"], False)
             self.assertIs(row["validation_passed"], True)
             self.assertIs(row["pixel_match"], True)
-            self.assertIs(row["sha256_match"], True)
+            self.assertEqual(54 + 8 * 4 * 4, row["bmp_bytes"])
+            self.assertAlmostEqual(row["bmp_bytes"] / 100.0, row["compression_ratio"])
+
+    def test_phase_summary_is_normalized_without_input_load_or_validation(self) -> None:
+        rows = [{
+            "stage": "full", "backend": "serial", "configuration_id": "serial_blo-1",
+            "all_valid": "true", "cuda_init_ms_median": 1.0, "openmp_init_ms_median": 2.0, "allocation_ms_median": 1.0,
+            "summary_ms_median": 2.0, "propagation_ms_median": 1.0,
+            "transfer_in_ms_median": 1.0, "encode_ms_median": 2.0,
+            "prefix_scan_ms_median": 1.0, "compaction_ms_median": 1.0,
+            "transfer_out_ms_median": 1.0, "merge_ms_median": 1.0,
+            "load_ms_median": 100.0, "validation_ms_median": 100.0,
+        }]
+
+        summary = create_excel_report.phase_summary(rows, "full")[0]
+
+        self.assertAlmostEqual(100.0, sum(summary[field.replace("_median", "")] for field, _label in create_excel_report.PHASE_COLUMNS))
+        self.assertAlmostEqual(2.0 / 14.0 * 100.0, summary["encode_ms"])
+        self.assertAlmostEqual(2.0 / 14.0 * 100.0, summary["openmp_init_ms"])
 
     def test_process_wall_time_is_retained_in_per_image_summary(self) -> None:
         group = [{

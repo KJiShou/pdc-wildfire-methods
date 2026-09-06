@@ -89,6 +89,7 @@ std::string result_json(const EncodeResult& result) {
          << ", \"input_cache_reused\": " << (result.input_cache_reused ? "true" : "false") << "},\n"
          << "  \"timing\": {\"load_ms\": " << result.load_ms
          << ", \"cuda_init_ms\": " << result.cuda_init_ms
+         << ", \"openmp_init_ms\": " << result.openmp_init_ms
          << ", \"allocation_ms\": " << result.allocation_ms
          << ", \"summary_ms\": " << result.summary_ms
          << ", \"propagation_ms\": " << result.propagation_ms
@@ -104,7 +105,8 @@ std::string result_json(const EncodeResult& result) {
          << ", \"validation_ms\": " << result.validation_ms
          << ", \"total_ms\": " << result.total_ms << "},\n"
          << "  \"output\": {\"path\": \"" << escape_json(result.output_path) << "\", \"bytes\": "
-         << result.output_bytes << ", \"compression_ratio\": " << result.compression_ratio
+         << result.output_bytes << ", \"bmp_bytes\": " << result.bmp_bytes
+         << ", \"compression_ratio\": " << result.compression_ratio
          << ", \"throughput_mpixels\": " << result.throughput_mpixels
          << ", \"core_pipeline_throughput_mpixels\": " << result.core_pipeline_throughput_mpixels << "},\n"
          << "  \"chunks\": {\"run\": " << result.run_chunks
@@ -120,8 +122,7 @@ std::string result_json(const EncodeResult& result) {
          << ", \"decoder_accepted\": " << (result.decoder_accepted ? "true" : "false")
          << ", \"dimensions_match\": " << (result.dimensions_match ? "true" : "false")
          << ", \"channels_match\": " << (result.channels_match ? "true" : "false")
-         << ", \"pixel_match\": " << (result.pixel_match ? "true" : "false")
-         << ", \"sha256_match\": " << (result.sha256_match ? "true" : "false") << "}\n"
+         << ", \"pixel_match\": " << (result.pixel_match ? "true" : "false") << "}\n"
          << "}\n";
     return json.str();
 }

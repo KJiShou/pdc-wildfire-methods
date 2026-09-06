@@ -56,8 +56,8 @@ EncodeResult run_conversion(const std::string& input_path,
         if (result.core_pipeline_ms <= 0.0) result.core_pipeline_ms = elapsed_ms(encode_start, encode_end);
         if (result.encode_ms <= 0.0) result.encode_ms = elapsed_ms(encode_start, encode_end);
         result.output_bytes = encoded.size();
-        const std::size_t raw_bytes = image.pixels.size() * static_cast<std::size_t>(image.channels);
-        result.compression_ratio = encoded.empty() ? 0.0 : static_cast<double>(raw_bytes) / encoded.size();
+        result.bmp_bytes = equivalent_bmp_bytes(image);
+        result.compression_ratio = encoded.empty() ? 0.0 : static_cast<double>(result.bmp_bytes) / encoded.size();
         result.throughput_mpixels = result.encode_ms <= 0.0
             ? 0.0
             : static_cast<double>(image.pixels.size()) / (result.encode_ms * 1000.0);
@@ -74,7 +74,6 @@ EncodeResult run_conversion(const std::string& input_path,
             result.dimensions_match = details.dimensions_match;
             result.channels_match = details.channels_match;
             result.pixel_match = details.pixel_match;
-            result.sha256_match = details.sha256_match;
             result.validation_passed = details.passed();
             if (result.validation_passed && !preview_path.empty()) {
                 write_bmp(preview_path, decode_qoi(output_path));

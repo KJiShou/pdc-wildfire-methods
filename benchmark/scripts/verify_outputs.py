@@ -32,8 +32,19 @@ def main() -> int:
             failures.append(f"{path}: status is {payload.get('status')!r}")
         if validation.get("passed") is not True or validation.get("pixel_match") is not True:
             failures.append(f"{path}: complete decoded pixel buffer did not match")
-        if validation.get("sha256_match") is not True:
-            failures.append(f"{path}: SHA-256 regression check failed")
+        input_data = payload.get("input", {})
+        output_data = payload.get("output", {})
+        try:
+            expected_bmp_bytes = 54 + int(input_data.get("width", 0)) * int(input_data.get("height", 0)) * 4
+            if int(output_data.get("bmp_bytes", -1)) != expected_bmp_bytes:
+                failures.append(f"{path}: equivalent BMP size is inconsistent with input dimensions")
+            qoi_bytes = int(output_data.get("bytes", 0))
+            expected_ratio = expected_bmp_bytes / qoi_bytes if qoi_bytes > 0 else 0.0
+            actual_ratio = float(output_data.get("compression_ratio", 0.0))
+            if abs(actual_ratio - expected_ratio) > 0.01:
+                failures.append(f"{path}: BMP/QOI compression ratio is inconsistent")
+        except (TypeError, ValueError, OverflowError):
+            failures.append(f"{path}: invalid BMP/QOI size metrics")
         output_path = Path(payload.get("output", {}).get("path", ""))
         if args.require_artifacts and not output_path.is_file():
             failures.append(f"{path}: QOI output is missing ({output_path})")

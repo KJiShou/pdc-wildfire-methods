@@ -536,8 +536,9 @@ pqoi::EncodeResult run_mpi_conversion_impl(const std::string& input_path,
         }
         result.core_pipeline_ms = (MPI_Wtime() - pipeline_start) * 1000.0;
         result.output_bytes = workspace.encoded.size();
+        result.bmp_bytes = pqoi::equivalent_bmp_bytes(image_on_root);
         result.compression_ratio = workspace.encoded.empty() ? 0.0
-            : static_cast<double>(image_on_root.pixels.size() * image_on_root.channels) / workspace.encoded.size();
+            : static_cast<double>(result.bmp_bytes) / workspace.encoded.size();
         result.throughput_mpixels = result.encode_ms <= 0.0 ? 0.0
             : static_cast<double>(image_on_root.pixels.size()) / (result.encode_ms * 1000.0);
         result.core_pipeline_throughput_mpixels = result.core_pipeline_ms <= 0.0 ? 0.0
@@ -555,7 +556,6 @@ pqoi::EncodeResult run_mpi_conversion_impl(const std::string& input_path,
             result.dimensions_match = details.dimensions_match;
             result.channels_match = details.channels_match;
             result.pixel_match = details.pixel_match;
-            result.sha256_match = details.sha256_match;
             result.validation_passed = details.passed();
             if (result.validation_passed && !preview_path.empty()) pqoi::write_bmp(preview_path, pqoi::decode_qoi(output_path));
             result.validation_ms = (MPI_Wtime() - validation_start) * 1000.0;

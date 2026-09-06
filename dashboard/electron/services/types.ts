@@ -45,6 +45,7 @@ export type NativeResult = {
   timing: {
     load_ms: number
     cuda_init_ms: number
+    openmp_init_ms: number
     allocation_ms: number
     summary_ms: number
     propagation_ms: number
@@ -60,11 +61,17 @@ export type NativeResult = {
     validation_ms: number
     total_ms: number
   }
-  output: { path: string; bytes: number; compression_ratio: number; throughput_mpixels: number; core_pipeline_throughput_mpixels: number }
+  output: { path: string; bytes: number; bmp_bytes: number; compression_ratio: number; throughput_mpixels: number; core_pipeline_throughput_mpixels: number }
   chunks: { run: number; index: number; diff: number; luma: number; rgb: number; rgba: number }
   cross_block: { inherited_index_hits: number; fallback_bytes_avoided: number }
   preview_path: string
-  validation: { passed: boolean; pixel_match: boolean; sha256_match: boolean }
+  validation: {
+    passed: boolean
+    decoder_accepted: boolean
+    dimensions_match: boolean
+    channels_match: boolean
+    pixel_match: boolean
+  }
 }
 
 export type OrchestrationMetrics = {

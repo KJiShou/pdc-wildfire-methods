@@ -13,12 +13,12 @@ from typing import Any, Iterable
 
 
 TIMING_FIELDS = (
-    "load_ms", "cuda_init_ms", "allocation_ms", "summary_ms", "propagation_ms", "transfer_in_ms", "encode_ms",
+    "load_ms", "cuda_init_ms", "openmp_init_ms", "allocation_ms", "summary_ms", "propagation_ms", "transfer_in_ms", "encode_ms",
     "transfer_out_ms", "merge_ms", "prefix_scan_ms", "compaction_ms", "core_pipeline_ms", "write_ms", "metrics_analysis_ms", "validation_ms", "total_ms",
 )
 DERIVED_PHASE_FIELDS = ("pass1_ms", "pass2_ms", "communication_ms")
 CHUNK_FIELDS = ("run", "index", "diff", "luma", "rgb", "rgba")
-BOOLEAN_FIELDS = ("is_warmup", "validation_passed", "pixel_match", "sha256_match")
+BOOLEAN_FIELDS = ("is_warmup", "validation_passed", "pixel_match")
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -42,6 +42,16 @@ def read_per_run_csv(path: Path) -> list[dict[str, Any]]:
         for field in BOOLEAN_FIELDS:
             value = str(row.get(field, "")).strip().lower()
             row[field] = True if value == "true" else False if value == "false" else None
+        if not row.get("bmp_bytes"):
+            row["bmp_bytes"] = equivalent_bmp_bytes(row.get("width"), row.get("height"))
+        try:
+            qoi_bytes = float(row.get("output_bytes") or 0.0)
+            bmp_bytes = float(row.get("bmp_bytes") or 0.0)
+            row["compression_ratio"] = bmp_bytes / qoi_bytes if qoi_bytes > 0.0 else None
+            row["size_reduction_percent"] = (1.0 - qoi_bytes / bmp_bytes) * 100.0 if bmp_bytes > 0.0 else None
+        except (TypeError, ValueError):
+            row["compression_ratio"] = None
+            row["size_reduction_percent"] = None
     return rows
 
 
@@ -55,6 +65,15 @@ def finite(values: Iterable[Any]) -> list[float]:
         if math.isfinite(number):
             result.append(number)
     return result
+
+
+def equivalent_bmp_bytes(width: Any, height: Any) -> int:
+    try:
+        parsed_width = max(0, int(width or 0))
+        parsed_height = max(0, int(height or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return 54 + parsed_width * parsed_height * 4
 
 
 def describe(values: Iterable[Any], prefix: str) -> dict[str, float | None]:
@@ -100,12 +119,12 @@ def flatten(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "segment_length": configuration.get("segment_length"),
         "cuda_threads_per_block": configuration.get("cuda_threads_per_block"),
         "output_bytes": output.get("bytes"),
-        "compression_ratio": output.get("compression_ratio"),
+        "bmp_bytes": output.get("bmp_bytes") or equivalent_bmp_bytes(width, height),
+        "compression_ratio": None,
         "throughput_mpixels": output.get("throughput_mpixels"),
         "core_pipeline_throughput_mpixels": output.get("core_pipeline_throughput_mpixels"),
         "validation_passed": validation.get("passed"),
         "pixel_match": validation.get("pixel_match"),
-        "sha256_match": validation.get("sha256_match"),
         "process_wall_ms": experiment.get("process_wall_ms"),
         "request_roundtrip_ms": experiment.get("request_roundtrip_ms"),
         "worker_startup_ms": experiment.get("worker_startup_ms"),
@@ -115,6 +134,15 @@ def flatten(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "inherited_index_hits": cross_block.get("inherited_index_hits", 0),
         "fallback_bytes_avoided": cross_block.get("fallback_bytes_avoided", 0),
     }
+    qoi_bytes = row.get("output_bytes")
+    bmp_bytes = row.get("bmp_bytes")
+    try:
+        qoi_number = float(qoi_bytes)
+        bmp_number = float(bmp_bytes)
+    except (TypeError, ValueError):
+        qoi_number = bmp_number = 0.0
+    row["compression_ratio"] = bmp_number / qoi_number if qoi_number > 0.0 else None
+    row["size_reduction_percent"] = (1.0 - qoi_number / bmp_number) * 100.0 if bmp_number > 0.0 else None
     row.update({field: timing.get(field, None if field == "core_pipeline_ms" else 0.0) for field in TIMING_FIELDS})
     # Keep a short pipeline alias in CSV reports while retaining the native
     # core_pipeline_* names used by the result contract.
@@ -137,7 +165,7 @@ def aggregate_image(group: list[dict[str, Any]]) -> dict[str, Any]:
     for field in (*TIMING_FIELDS, *DERIVED_PHASE_FIELDS, "process_wall_ms"):
         row.update(describe((item.get(field) for item in group), field))
     row.update(describe((item.get("pipeline_ms") for item in group), "pipeline_ms"))
-    for field in ("output_bytes", "compression_ratio", "throughput_mpixels", "core_pipeline_throughput_mpixels", "inherited_index_hits",
+    for field in ("output_bytes", "bmp_bytes", "compression_ratio", "size_reduction_percent", "throughput_mpixels", "core_pipeline_throughput_mpixels", "inherited_index_hits",
                   "fallback_bytes_avoided", *[f"chunks_{name}" for name in CHUNK_FIELDS]):
         row.update(describe((item.get(field) for item in group), field))
     return row
@@ -179,9 +207,18 @@ def add_derived_metrics(rows: list[dict[str, Any]]) -> None:
             row["pipeline_time_median"] = row.get("pipeline_ms_median")
             row["pipeline_time_stdev"] = row.get("pipeline_ms_stdev")
             output_bytes = row.get("output_bytes_median")
+            bmp_bytes = row.get("bmp_bytes_median")
             row["size_overhead_percent"] = (
                 (float(output_bytes) - float(serial_bytes)) / float(serial_bytes) * 100.0
                 if output_bytes is not None and serial_bytes else None
+            )
+            row["compression_ratio"] = (
+                float(bmp_bytes) / float(output_bytes)
+                if bmp_bytes is not None and output_bytes and float(output_bytes) > 0.0 else None
+            )
+            row["size_reduction_percent"] = (
+                (1.0 - float(output_bytes) / float(bmp_bytes)) * 100.0
+                if bmp_bytes is not None and float(bmp_bytes) > 0.0 and output_bytes is not None else None
             )
 
 
@@ -228,8 +265,17 @@ def aggregate_suite(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[d
                 total_pixels / (total_pipeline_ms * 1000.0) if total_pipeline_ms and total_pipeline_ms > 0 else None
             ),
             "total_output_bytes": sum(float(item.get("output_bytes_median") or 0.0) for item in group),
+            "total_bmp_bytes": sum(float(item.get("bmp_bytes_median") or 0.0) for item in group),
             "all_valid": all(bool(item.get("all_valid")) for item in group),
         })
+        row["compression_ratio_total"] = (
+            row["total_bmp_bytes"] / row["total_output_bytes"]
+            if row["total_output_bytes"] > 0.0 else None
+        )
+        row["size_reduction_percent"] = (
+            (row["total_bmp_bytes"] - row["total_output_bytes"]) / row["total_bmp_bytes"] * 100.0
+            if row["total_bmp_bytes"] > 0.0 else None
+        )
         for field in ("encode_ms_median", "core_pipeline_ms_median", "speedup", "efficiency", "pipeline_speedup",
                       "pipeline_efficiency", "size_overhead_percent", "compression_ratio_median"):
             row.update(describe((item.get(field) for item in group), field))

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -112,7 +113,7 @@ pqoi::Image load_with_wic(const std::string& path) {
     if (FAILED(result)) { cleanup(); throw std::runtime_error("cannot create Windows image decoder"); }
     result = factory->CreateDecoderFromFilename(to_wide(path).c_str(), nullptr, GENERIC_READ,
                                                 WICDecodeMetadataCacheOnLoad, &decoder);
-    if (FAILED(result)) { cleanup(); throw std::runtime_error("PNG/BMP decoder cannot open input"); }
+    if (FAILED(result)) { cleanup(); throw std::runtime_error("image decoder cannot open input"); }
     result = decoder->GetFrame(0U, &frame);
     if (FAILED(result)) { cleanup(); throw std::runtime_error("image has no decodable frame"); }
     result = factory->CreateFormatConverter(&converter);
@@ -138,6 +139,21 @@ pqoi::Image load_with_wic(const std::string& path) {
 }  // namespace
 
 namespace pqoi {
+
+std::size_t equivalent_bmp_bytes(const Image& image) {
+    constexpr std::size_t header_bytes = 54U;
+    constexpr std::size_t bytes_per_pixel = 4U;
+    if (static_cast<std::size_t>(image.width) > (std::numeric_limits<std::size_t>::max)() / bytes_per_pixel) {
+        throw std::runtime_error("equivalent BMP row size overflows size_t");
+    }
+    const std::size_t row_stride = static_cast<std::size_t>(image.width) * bytes_per_pixel;
+    if (row_stride == 0U) return header_bytes;
+    if (static_cast<std::size_t>(image.height) >
+        ((std::numeric_limits<std::size_t>::max)() - header_bytes) / row_stride) {
+        throw std::runtime_error("equivalent BMP size overflows size_t");
+    }
+    return header_bytes + row_stride * static_cast<std::size_t>(image.height);
+}
 
 Image load_image(const std::string& path) {
     std::ifstream input(path, std::ios::binary);
@@ -183,9 +199,13 @@ Image load_image(const std::string& path) {
 }
 
 void write_bmp(const std::string& path, const Image& image) {
-    const std::size_t row_stride = static_cast<std::size_t>(image.width) * 4U;
-    const std::size_t pixel_bytes = row_stride * image.height;
-    const std::uint32_t file_size = static_cast<std::uint32_t>(54U + pixel_bytes);
+    constexpr std::size_t header_bytes = 54U;
+    const std::size_t total_bytes = equivalent_bmp_bytes(image);
+    if (total_bytes > (std::numeric_limits<std::uint32_t>::max)()) {
+        throw std::runtime_error("BMP output exceeds the 32-bit file-size limit");
+    }
+    const std::size_t pixel_bytes = total_bytes - header_bytes;
+    const std::uint32_t file_size = static_cast<std::uint32_t>(total_bytes);
     std::vector<std::uint8_t> header(54U, 0U);
     header[0] = 'B'; header[1] = 'M';
     const auto write_u32_le = [&header](const std::size_t offset, const std::uint32_t value) {

@@ -14,9 +14,12 @@ struct EncodeResult {
     std::uint32_t height{0};
     std::uint8_t channels{0};
     std::size_t output_bytes{0};
+    std::size_t bmp_bytes{0};
     double load_ms{0.0};
     // CUDA-only setup phases. They remain zero for CPU and MPI backends.
     double cuda_init_ms{0.0};
+    // OpenMP-only runtime setup. It remains zero for other backends.
+    double openmp_init_ms{0.0};
     double allocation_ms{0.0};
     double summary_ms{0.0};
     double propagation_ms{0.0};
@@ -54,7 +57,6 @@ struct EncodeResult {
     bool dimensions_match{false};
     bool channels_match{false};
     bool pixel_match{false};
-    bool sha256_match{false};
     std::string input_path;
     std::string output_path;
     std::string preview_path;

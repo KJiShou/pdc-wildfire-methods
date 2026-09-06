@@ -36,17 +36,17 @@ BACKEND_COLORS = {
 }
 
 PHASE_COLUMNS = (
-    ("load_ms_median", "Input decode"),
     ("cuda_init_ms_median", "CUDA init"),
+    ("openmp_init_ms_median", "OpenMP init"),
     ("allocation_ms_median", "GPU allocation"),
     ("summary_ms_median", "Pass 1 / summary"),
     ("propagation_ms_median", "Propagation"),
     ("transfer_in_ms_median", "Transfer in"),
     ("encode_ms_median", "Pass 2 / encode"),
-    ("transfer_out_ms_median", "Transfer out"),
+    ("prefix_scan_ms_median", "Prefix scan"),
     ("compaction_ms_median", "Compaction"),
+    ("transfer_out_ms_median", "Transfer out"),
     ("merge_ms_median", "Merge"),
-    ("validation_ms_median", "Validation"),
 )
 
 
@@ -54,7 +54,26 @@ def read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
-        return list(csv.DictReader(handle))
+        rows = list(csv.DictReader(handle))
+    for row in rows:
+        if not row.get("bmp_bytes_median") and row.get("width") and row.get("height"):
+            row["bmp_bytes_median"] = str(equivalent_bmp_bytes(row.get("width"), row.get("height")))
+        if not row.get("total_bmp_bytes") and row.get("total_pixels") and row.get("images"):
+            row["total_bmp_bytes"] = str(
+                54 * max(0, integer(row.get("images"), 0) or 0)
+                + 4 * max(0, integer(row.get("total_pixels"), 0) or 0)
+            )
+        if row.get("output_bytes_median") and row.get("bmp_bytes_median"):
+            qoi_bytes = number(row.get("output_bytes_median"), 0) or 0
+            bmp_bytes = number(row.get("bmp_bytes_median"), 0) or 0
+            row["compression_ratio_median"] = str(bmp_bytes / qoi_bytes) if qoi_bytes > 0 else ""
+            row["size_reduction_percent"] = str((1 - qoi_bytes / bmp_bytes) * 100) if bmp_bytes > 0 else ""
+        if row.get("total_output_bytes") and row.get("total_bmp_bytes"):
+            qoi_bytes = number(row.get("total_output_bytes"), 0) or 0
+            bmp_bytes = number(row.get("total_bmp_bytes"), 0) or 0
+            row["compression_ratio_total"] = str(bmp_bytes / qoi_bytes) if qoi_bytes > 0 else ""
+            row["size_reduction_percent"] = str((1 - qoi_bytes / bmp_bytes) * 100) if bmp_bytes > 0 else ""
+    return rows
 
 
 def number(value: Any, default: float | None = None) -> float | None:
@@ -70,6 +89,12 @@ def number(value: Any, default: float | None = None) -> float | None:
 def integer(value: Any, default: int | None = None) -> int | None:
     parsed = number(value)
     return int(parsed) if parsed is not None else default
+
+
+def equivalent_bmp_bytes(width: Any, height: Any) -> int:
+    parsed_width = max(0, integer(width, 0) or 0)
+    parsed_height = max(0, integer(height, 0) or 0)
+    return 54 + parsed_width * parsed_height * 4
 
 
 def median(values: Iterable[Any]) -> float:
@@ -128,6 +153,10 @@ def phase_summary(per_image_rows: list[dict[str, str]], stage: str) -> list[dict
         }
         for field, _label in PHASE_COLUMNS:
             output[field.replace("_median", "")] = median(row.get(field, "0") for row in rows)
+        phase_total = sum(float(output[field.replace("_median", "")]) for field, _label in PHASE_COLUMNS)
+        for field, _label in PHASE_COLUMNS:
+            key = field.replace("_median", "")
+            output[key] = output[key] / phase_total * 100.0 if phase_total > 0.0 else 0.0
         result.append(output)
     return result
 
@@ -205,7 +234,7 @@ def write_table(worksheet: xlsxwriter.worksheet.Worksheet, start_row: int, start
                 value_format = formats["mpix"]
             elif "speedup" in header.lower() or "ratio" in header.lower():
                 value_format = formats["ratio"]
-            elif "overhead" in header.lower():
+            elif "overhead" in header.lower() or "saved" in header.lower() or "%" in header:
                 value_format = formats["percent_points"]
             elif "efficiency" in header.lower():
                 value_format = formats["percent"]
@@ -340,7 +369,7 @@ def main() -> int:
             report.write(8, col, value, formats["kpi_value"])
         report.set_column(1 + index * 3, 2 + index * 3, 14)
 
-    overview_headers = ["Backend", "Encode median (ms)", "Core pipeline median (ms)", "Encode suite throughput (MPix/s)", "Core pipeline suite throughput (MPix/s)", "Speedup (×)", "Efficiency", "Output bytes", "Compression ratio", "Size overhead (%)", "All valid"]
+    overview_headers = ["Backend", "Encode median (ms)", "Core pipeline median (ms)", "Encode suite throughput (MPix/s)", "Core pipeline suite throughput (MPix/s)", "Speedup (×)", "Efficiency", "QOI bytes", "Equivalent BMP bytes", "Compression ratio (BMP/QOI)", "Space saved (%)", "Size overhead vs Serial (%)", "All valid"]
     overview_rows: list[list[Any]] = []
     for row in full_rows:
         overview_rows.append([
@@ -352,23 +381,25 @@ def main() -> int:
             number(row.get("speedup_median"), 0),
             number(row.get("efficiency_median")),
             number(row.get("total_output_bytes"), 0),
-            number(row.get("compression_ratio_median_median"), 0),
+            number(row.get("total_bmp_bytes"), 0),
+            number(row.get("compression_ratio_total", row.get("compression_ratio_median_median")), 0),
+            number(row.get("size_reduction_percent")),
             number(row.get("size_overhead_percent_median")),
             row.get("all_valid", "").lower() == "true",
         ])
     overview = write_summary_sheet(
         workbook, "Full Suite", "Full-suite backend summary",
         "Source: results/evaluation/full/summary/full-suite-summary.csv. One-pass control is retained for the research comparison but is not a product backend.",
-        overview_headers, overview_rows, formats, [20, 18, 24, 26, 32, 14, 14, 18, 20, 20, 12],
+        overview_headers, overview_rows, formats, [20, 18, 24, 26, 32, 14, 14, 18, 22, 24, 18, 24, 12],
     )
     overview.set_column(1, 1, 18, formats["ms"])
     overview.set_column(2, 2, 24, formats["ms"])
     overview.set_column(3, 4, 30, formats["mpix"])
     overview.set_column(5, 5, 14, formats["ratio"])
     overview.set_column(6, 6, 14, formats["percent"])
-    overview.set_column(7, 7, 18, formats["integer"])
-    overview.set_column(8, 8, 20, formats["number"])
-    overview.set_column(9, 9, 20, formats["percent_points"])
+    overview.set_column(7, 8, 20, formats["integer"])
+    overview.set_column(9, 9, 24, formats["ratio"])
+    overview.set_column(10, 11, 22, formats["percent_points"])
 
     # Add report charts using the compact full-suite table on the Full Suite sheet.
     first_data_row = 4
@@ -376,7 +407,7 @@ def main() -> int:
         ("Encode median by backend", 1, "Encode (ms)"),
         ("Core pipeline median by backend", 2, "Core pipeline (ms)"),
         ("Effective core pipeline throughput", 4, "MPix/s"),
-        ("Compression ratio", 8, "Raw bytes / QOI bytes"),
+        ("Compression ratio", 9, "BMP bytes / QOI bytes"),
     ]
     chart_positions = ["B11", "J11", "B28", "J28"]
     for (title, value_col, y_label), position in zip(chart_specs, chart_positions):
@@ -396,7 +427,7 @@ def main() -> int:
         report.insert_chart(position, chart)
 
     # Category data and chart.
-    category_headers = ["Category", "Backend", "Configuration", "Images", "Encode median (ms)", "Core pipeline median (ms)", "Speedup (×)", "Efficiency", "Encode throughput (MPix/s)", "Core pipeline throughput (MPix/s)", "Output bytes", "Compression ratio", "Size overhead (%)", "All valid"]
+    category_headers = ["Category", "Backend", "Configuration", "Images", "Encode median (ms)", "Core pipeline median (ms)", "Speedup (×)", "Efficiency", "Encode throughput (MPix/s)", "Core pipeline throughput (MPix/s)", "QOI bytes", "Equivalent BMP bytes", "Compression ratio (BMP/QOI)", "Space saved (%)", "Size overhead vs Serial (%)", "All valid"]
     category_rows: list[list[Any]] = []
     for row in category_summary:
         category_rows.append([
@@ -405,22 +436,23 @@ def main() -> int:
             number(row.get("core_pipeline_ms_median_median"), 0), number(row.get("speedup_median"), 0),
             number(row.get("efficiency_median")), number(row.get("suite_throughput_mpixels"), 0),
             number(row.get("suite_core_pipeline_throughput_mpixels"), 0), number(row.get("total_output_bytes"), 0),
-            number(row.get("compression_ratio_median_median"), 0), number(row.get("size_overhead_percent_median")),
+            number(row.get("total_bmp_bytes"), 0), number(row.get("compression_ratio_total", row.get("compression_ratio_median_median")), 0),
+            number(row.get("size_reduction_percent")), number(row.get("size_overhead_percent_median")),
             row.get("all_valid", "").lower() == "true",
         ])
     category_sheet = write_summary_sheet(
         workbook, "Category Summary", "Full-stage category comparison",
         "Grouped by image category. Use the filters to isolate a backend or category before copying a chart into the report.",
-        category_headers, category_rows, formats, [24, 18, 24, 10, 18, 24, 14, 14, 24, 30, 18, 20, 20, 12],
+        category_headers, category_rows, formats, [24, 18, 24, 10, 18, 24, 14, 14, 24, 30, 18, 22, 24, 18, 24, 12],
     )
     category_sheet.set_column(4, 4, 18, formats["ms"])
     category_sheet.set_column(5, 5, 24, formats["ms"])
     category_sheet.set_column(6, 6, 14, formats["ratio"])
     category_sheet.set_column(7, 7, 14, formats["percent"])
     category_sheet.set_column(8, 9, 26, formats["mpix"])
-    category_sheet.set_column(10, 10, 18, formats["integer"])
-    category_sheet.set_column(11, 11, 20, formats["number"])
-    category_sheet.set_column(12, 12, 20, formats["percent_points"])
+    category_sheet.set_column(10, 11, 20, formats["integer"])
+    category_sheet.set_column(12, 12, 24, formats["ratio"])
+    category_sheet.set_column(13, 14, 22, formats["percent_points"])
 
     # Compact category matrix used by a report-ready grouped speedup chart.
     category_names = sorted({row.get("category", "") for row in category_summary if row.get("category")})
@@ -493,17 +525,17 @@ def main() -> int:
         report.insert_chart("B88", scatter_chart)
 
     # Phase summaries are derived from the already aggregated per-image CSV.
-    phase_headers = ["Stage", "Backend", "Configuration", "Images", "All valid"] + [label + " (ms)" for _field, label in PHASE_COLUMNS]
+    phase_headers = ["Stage", "Backend", "Configuration", "Images", "All valid"] + [label + " (%)" for _field, label in PHASE_COLUMNS]
     phase_rows: list[list[Any]] = []
     for stage in ("correctness", "tuning", "full"):
         for row in phase_summary(all_per_image, stage):
             phase_rows.append([row["stage"], row["backend"], row["configuration"], row["images"], row["all_valid"]] + [row[field.replace("_median", "")] for field, _label in PHASE_COLUMNS])
     phase_sheet = write_summary_sheet(
-        workbook, "Phase Summary", "Median phase timing by stage and backend",
-        "Phase values are medians across the per-image medians. Missing CUDA setup fields in older artifacts are shown as 0; regenerate the benchmark after the latest native timing changes for final reporting.",
+        workbook, "Phase Summary", "Median phase share by stage and backend",
+        "Phase values are normalized percentages of the listed init, compute, transfer and assembly phases. OpenMP init captures first thread-team creation/wakeup. Input loading, output writing, validation and metrics analysis are excluded.",
         phase_headers, phase_rows, formats, [14, 18, 24, 10, 12] + [17] * len(PHASE_COLUMNS),
     )
-    phase_sheet.set_column(5, 4 + len(PHASE_COLUMNS), 17, formats["ms"])
+    phase_sheet.set_column(5, 4 + len(PHASE_COLUMNS), 17, formats["percent_points"])
 
     # Stacked phase chart for the full stage.
     full_phase_rows = [row for row in phase_rows if row[0] == "full"]
@@ -515,11 +547,11 @@ def main() -> int:
                 "name": ["Phase Summary", full_phase_start - 1, index],
                 "categories": ["Phase Summary", full_phase_start, 1, full_phase_start + len(full_phase_rows) - 1, 1],
                 "values": ["Phase Summary", full_phase_start, index, full_phase_start + len(full_phase_rows) - 1, index],
-                "fill": {"color": ["#AEB7C1", "#D4DBE1", "#C4CCD4", "#9BA7B2", "#8997A4", "#B9C98E", "#789A22", "#94AD4D", "#B2BBC4", "#D8DEE4", "#C8D0D8"][index - 5]},
+                "fill": {"color": ["#D4DBE1", "#C7D5A5", "#C4CCD4", "#9BA7B2", "#8997A4", "#B9C98E", "#789A22", "#6E8734", "#748F36", "#94AD4D", "#B2BBC4"][index - 5]},
                 "border": {"none": True},
             })
         phase_chart.set_size({"width": 850, "height": 380})
-        phase_chart.set_x_axis({"name": "Duration (ms)", "major_gridlines": {"visible": False}})
+        phase_chart.set_x_axis({"name": "Share (%)", "major_gridlines": {"visible": False}, "max": 100})
         phase_chart.set_y_axis({"name": "Backend"})
         chart_title(phase_chart, "Full-suite median phase breakdown")
         report.insert_chart("B45", phase_chart)
@@ -529,7 +561,7 @@ def main() -> int:
         row for row in read_csv(tuning_summary_dir / "full-suite-summary.csv")
         if row.get("stage") == "tuning"
     ]
-    tuning_headers = ["Backend", "Configuration", "Primary parameter", "Blocks", "Images", "Core pipeline median (ms)", "Core pipeline throughput (MPix/s)", "Encode median (ms)", "Encode throughput (MPix/s)", "Speedup (×)", "Efficiency", "Compression ratio"]
+    tuning_headers = ["Backend", "Configuration", "Primary parameter", "Blocks", "Images", "Core pipeline median (ms)", "Core pipeline throughput (MPix/s)", "Encode median (ms)", "Encode throughput (MPix/s)", "Speedup (×)", "Efficiency", "QOI bytes", "Equivalent BMP bytes", "Compression ratio (BMP/QOI)", "Space saved (%)"]
     tuning_rows: list[list[Any]] = []
     for row in tuning_suite:
         backend = row.get("backend", "")
@@ -539,12 +571,13 @@ def main() -> int:
             number(row.get("core_pipeline_ms_median_median"), 0), number(row.get("suite_core_pipeline_throughput_mpixels"), 0),
             number(row.get("encode_ms_median_median"), 0), number(row.get("suite_throughput_mpixels"), 0),
             number(row.get("speedup_median"), 0), number(row.get("efficiency_median")),
-            number(row.get("compression_ratio_median_median"), 0),
+            number(row.get("total_output_bytes"), 0), number(row.get("total_bmp_bytes"), 0),
+            number(row.get("compression_ratio_total", row.get("compression_ratio_median_median")), 0), number(row.get("size_reduction_percent")),
         ])
     tuning_sheet = write_summary_sheet(
         workbook, "Tuning Summary", "Tuning configuration results",
         "Primary parameter means threads for OpenMP, segment length for CUDA, processes for MPI, and block count for the control. Use this sheet to choose the configuration used in the full suite.",
-        tuning_headers, tuning_rows, formats, [18, 24, 18, 10, 10, 24, 30, 18, 24, 14, 14, 20],
+        tuning_headers, tuning_rows, formats, [18, 24, 18, 10, 10, 24, 30, 18, 24, 14, 14, 18, 22, 24, 18],
     )
     tuning_sheet.set_column(5, 5, 24, formats["ms"])
     tuning_sheet.set_column(6, 6, 30, formats["mpix"])
@@ -552,7 +585,9 @@ def main() -> int:
     tuning_sheet.set_column(8, 8, 24, formats["mpix"])
     tuning_sheet.set_column(9, 9, 14, formats["ratio"])
     tuning_sheet.set_column(10, 10, 14, formats["percent"])
-    tuning_sheet.set_column(11, 11, 20, formats["number"])
+    tuning_sheet.set_column(11, 12, 20, formats["integer"])
+    tuning_sheet.set_column(13, 13, 24, formats["ratio"])
+    tuning_sheet.set_column(14, 14, 18, formats["percent_points"])
 
     # Size scalability data and chart.
     scale_headers = ["Stage", "Backend", "Pixel bin", "Median pixels", "Core pipeline median (ms)", "Core pipeline throughput (MPix/s)", "Encode median (ms)", "Encode throughput (MPix/s)", "Images"]
@@ -585,8 +620,9 @@ def main() -> int:
         ("Speedup", "Serial encode median divided by the backend encode median for the same image/configuration."),
         ("Efficiency", "Speedup divided by OpenMP thread count or MPI process count. CUDA is intentionally blank."),
         ("Suite throughput", "Encode throughput uses total pixels divided by the sum of per-image median encode times; the core-pipeline column applies the same calculation to core pipeline time."),
-        ("Compression ratio", "Raw pixel bytes divided by encoded QOI bytes. Larger is more compact."),
-        ("Correctness", "Official qoi.h decode, dimensions/channels, pixel buffer and SHA-256 checks. Show separately from performance."),
+        ("Compression ratio", "Equivalent uncompressed 32-bit BMP bytes divided by encoded QOI bytes. Larger is more compact; space saved is 1 - QOI/BMP."),
+        ("Phase share", "Each method is normalized to 100% across CUDA init, OpenMP init, allocation, summary, propagation, transfer, encoding, scan, compaction and merge phases. OpenMP init captures first thread-team creation/wakeup. Input loading, output writing, validation and metrics analysis are excluded."),
+        ("Correctness", "Official qoi.h decode, dimensions/channels and complete pixel-buffer comparison. Show separately from performance."),
         ("Source", "Consolidated summary/*.csv and tuning-summary/*.csv generated by benchmark/scripts/aggregate_results.py."),
         ("Reproducibility", "One warm-up plus five measured runs per image/configuration; backend processes run sequentially."),
     ]

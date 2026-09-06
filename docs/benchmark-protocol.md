@@ -11,13 +11,13 @@ The automated protocol follows the three-stage evaluation plan in Chapter 5.
    CUDA pixels per segment and CUDA threads per block, and MPI
    processes/image partitions.
 3. **Full:** run Serial, one-pass control and the selected best OpenMP, CUDA and
-   MPI configurations over every image in the downloaded archive (2,848 images
-   in the current official suite; the fetcher records the exact archive hash).
+   MPI configurations over every image in the published full manifest (2,848
+   images in the current official suite).
 
-`create_manifest.py` sorts every category by relative filename and selects the
-midpoint of each equal-width interval. This makes the subset deterministic and
-avoids selecting favourable files manually. The generated manifest is the
-published record of selected filenames.
+The manifests under `benchmark/manifests/` are deterministic input records. Each
+entry identifies an image, category and channel mode, while the referenced image
+files must already be available locally. Dataset download and synthetic-image
+generation are outside the final benchmark execution path.
 
 ## Repetition and timing
 
@@ -38,9 +38,10 @@ that worker, and records `request_roundtrip_ms`, worker startup and reuse in
 the `experiment` object. The default remains one-shot MPI for compatibility.
 
 `load_ms` measures native input decode. `cuda_init_ms` and `allocation_ms` are
-CUDA-only setup phases and are zero for the other backends. Summary corresponds
-to Pass 1, propagation is state propagation, and encode is Pass 2. OpenMP uses
-the configured worker count with static scheduling for both Pass 1 and Pass 2;
+CUDA-only setup phases and are zero for the other backends. `openmp_init_ms` is
+the OpenMP-only cost of first thread-team creation/wakeup and is zero for the
+other backends. Summary corresponds to Pass 1, propagation is state propagation,
+and encode is Pass 2. OpenMP uses the configured worker count with static scheduling for both Pass 1 and Pass 2;
 its ordered state propagation remains sequential. For CUDA, `summary_ms`
 measures the GPU summary kernel, while `propagation_ms` measures the device
 exclusive summary scan and entry-state kernel. `prefix_scan_ms` measures the
@@ -54,12 +55,20 @@ CUDA host/device transfers and the final MPI encoded-payload gather are reported
 as transfer in/out. `prefix_scan_ms` remains zero unless a backend actually
 performs a separately timed prefix scan; no value is inferred or fabricated.
 
+The Dashboard and Excel phase breakdown normalize the listed method phases
+(CUDA init, OpenMP init, allocation, summary, propagation, transfers, encoding,
+scan, compaction and merge) to 100% per backend. OpenMP init is included in the
+method total but excluded from summary itself. Input loading, output writing, validation and
+metrics analysis are excluded from that denominator; native JSON and CSV
+contracts retain the original millisecond fields.
+
 ## Derived metrics
 
 `aggregate_results.py` produces per-run, per-image, category and full-suite CSV
-files. It calculates speedup, CPU/MPI efficiency, compression ratio, output-size
-overhead, chunk distribution, cross-block counters, encode and core-pipeline
-suite throughput, and total encoded size. CUDA efficiency is intentionally blank
+files. It calculates speedup, CPU/MPI efficiency, equivalent-BMP/QOI compression
+ratio, QOI space saved, output-size overhead, chunk distribution, cross-block
+counters, encode and core-pipeline suite throughput, and total encoded size.
+CUDA efficiency is intentionally blank
 because CPU thread/process efficiency is not a meaningful GPU occupancy metric.
 Pipeline median/stdev aliases, pipeline speedup/efficiency, and suite pipeline
 throughput are retained alongside the native `core_pipeline_*` columns.
@@ -76,28 +85,17 @@ reliably inferred by a portable runner.
 Example:
 
 ```powershell
-python benchmark/scripts/fetch_official_datasets.py --dataset conformance
-
-python benchmark/scripts/create_manifest.py --root data/benchmark-suite/images `
-  --stage tuning --per-category 20 --output benchmark/manifests/tuning.json
-
 python benchmark/scripts/run_benchmarks.py `
-  --manifest benchmark/manifests/tuning.json --stage tuning `
-  --native-dir build-full/Release --output-dir results/evaluation
+  --manifest benchmark/manifests/tuning.json `
+  --config benchmark/configs/evaluation.json `
+  --stage tuning --native-dir build-full/Release `
+  --output-dir results/evaluation --resume
 
 python benchmark/scripts/aggregate_results.py `
   --input-dir results/evaluation --output results/per-run.csv
 ```
 
 The official sources are `https://qoiformat.org/qoi_test_images.zip` and
-`https://qoiformat.org/benchmark/qoi_benchmark_suite.tar`. The fetcher records
-the downloaded SHA-256 and source URL but does not commit either dataset.
-
-Controlled solid-colour, limited-palette, gradient, deterministic noise and
-transparent RGB/RGBA BMP inputs can be generated with:
-
-```powershell
-python benchmark/scripts/generate_synthetic.py --output-dir data/synthetic
-```
-
-Add `--include-8k` only when memory, storage and GPU capacity permit.
+`https://qoiformat.org/benchmark/qoi_benchmark_suite.tar`. The benchmark runner
+does not download or commit either dataset; it expects the image files referenced
+by the selected manifest to have been provisioned separately.

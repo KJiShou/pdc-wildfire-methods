@@ -6,11 +6,13 @@ import { dialog, ipcMain, nativeImage } from 'electron'
 import type { ConversionService } from '../services/conversionService'
 import type { SelectedImage } from '../services/types'
 
-const acceptedExtensions = new Set(['.png', '.bmp'])
+const acceptedExtensions = new Set(['.png', '.bmp', '.jpg', '.jpeg'])
 
 function validatePath(inputPath: string): void {
   if (!existsSync(inputPath) || !statSync(inputPath).isFile()) throw new Error('selected file does not exist')
-  if (!acceptedExtensions.has(extname(inputPath).toLowerCase())) throw new Error('please choose a PNG or BMP image')
+  if (!acceptedExtensions.has(extname(inputPath).toLowerCase())) {
+    throw new Error('please choose a PNG, BMP, or JPEG image')
+  }
 }
 
 async function makeSelectedImage(inputPath: string): Promise<SelectedImage> {
@@ -35,7 +37,7 @@ export function registerFileHandlers(service: ConversionService): void {
     const selected = await dialog.showOpenDialog({
       title: 'Choose an image',
       properties: ['openFile'],
-      filters: [{ name: 'Images', extensions: ['png', 'bmp'] }],
+      filters: [{ name: 'Images', extensions: ['png', 'bmp', 'jpg', 'jpeg'] }],
     })
     if (selected.canceled || !selected.filePaths[0]) return undefined
     const image = await makeSelectedImage(selected.filePaths[0])

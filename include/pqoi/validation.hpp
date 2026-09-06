@@ -11,7 +11,6 @@ struct ValidationDetails {
     bool dimensions_match{false};
     bool channels_match{false};
     bool pixel_match{false};
-    bool sha256_match{false};
 
     [[nodiscard]] bool passed() const noexcept {
         return decoder_accepted && dimensions_match && channels_match && pixel_match;
@@ -20,7 +19,6 @@ struct ValidationDetails {
 
 ValidationDetails validate_qoi_detailed(const std::string& qoi_path, const Image& expected);
 bool validate_qoi(const std::string& qoi_path, const Image& expected);
-bool sha256_match_qoi(const std::string& qoi_path, const Image& expected);
 Image decode_qoi(const std::string& qoi_path);
 
 }  // namespace pqoi
